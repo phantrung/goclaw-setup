@@ -78,7 +78,25 @@ sudo bash setup.sh [OPTIONS]
 | `--non-interactive` | Bỏ qua tất cả prompts, dùng defaults hoặc env vars |
 | `--skip-ssl` | Không cài Nginx + SSL |
 | `--skip-firewall` | Không cấu hình UFW |
+| `--reset` | Xoá containers/config cũ, **giữ backups**, rồi setup lại |
+| `--uninstall` | Gỡ **hoàn toàn** (containers, images, config, data, cron) |
 | `-h, --help` | Hiện help |
+
+### Reset (setup lại từ đầu)
+
+```bash
+sudo bash setup.sh --reset
+```
+
+> Xoá containers + DB data + `.env` + `docker-compose.yml`. **Giữ lại** `backups/` và `workspaces/`.
+
+### Gỡ hoàn toàn
+
+```bash
+sudo bash setup.sh --uninstall
+```
+
+> Xoá tất cả: containers, images, volumes, Nginx config, cron job, thư mục cài đặt.
 
 ### Non-interactive mode (cho CI/CD hoặc Ansible)
 
