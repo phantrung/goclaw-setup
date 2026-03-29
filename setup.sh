@@ -312,12 +312,19 @@ ENVFILE
 chmod 600 "$INSTALL_DIR/.env"
 ok ".env (root-only readable)"
 
+step "Cleanup containers cũ (nếu có)"
+for cname in goclaw-db goclaw-app; do
+    if docker ps -a --format '{{.Names}}' | grep -q "^${cname}$"; then
+        docker rm -f "$cname" &>/dev/null
+        info "Removed old container: $cname"
+    fi
+done
+
 step "Tạo docker-compose.yml"
 cat > "$INSTALL_DIR/docker-compose.yml" << 'COMPOSEFILE'
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: goclaw-db
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -336,7 +343,6 @@ services:
 
   goclaw:
     image: ghcr.io/nextlevelbuilder/goclaw:latest
-    container_name: goclaw-app
     ports:
       - "127.0.0.1:${PORT}:${PORT}"
     env_file:
