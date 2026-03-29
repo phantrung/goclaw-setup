@@ -99,37 +99,38 @@ fail() { echo -e "  ${RED}✗${NC} $1"; ERRORS=$((ERRORS + 1)); }
 info() { echo -e "  ${DIM}ℹ $1${NC}"; }
 
 prompt() {
-    local prompt_text=$1
-    local default_val=$2
-    local var_name=$3
-    local is_secret=${4:-false}
+    local prompt_text="$1"
+    local default_val="$2"
+    local var_name="$3"
+    local is_secret="${4:-false}"
+    local input_val=""
 
     if $NON_INTERACTIVE; then
-        eval "$var_name='$default_val'"
+        printf -v "$var_name" '%s' "$default_val"
         return
     fi
 
     if [ -n "$default_val" ]; then
         if [ "$is_secret" = true ]; then
-            echo -e -n "  ${CYAN}$prompt_text [****]: ${NC}"
+            echo -e -n "  ${CYAN}${prompt_text} [****]: ${NC}"
         else
-            echo -e -n "  ${CYAN}$prompt_text [$default_val]: ${NC}"
+            echo -e -n "  ${CYAN}${prompt_text} [${default_val}]: ${NC}"
         fi
     else
-        echo -e -n "  ${CYAN}$prompt_text: ${NC}"
+        echo -e -n "  ${CYAN}${prompt_text}: ${NC}"
     fi
 
     if [ "$is_secret" = true ]; then
-        read -rs input_val
+        read -rs input_val < /dev/tty
         echo ""
     else
-        read -r input_val
+        read -r input_val < /dev/tty
     fi
 
     if [ -z "$input_val" ]; then
-        eval "$var_name='$default_val'"
+        printf -v "$var_name" '%s' "$default_val"
     else
-        eval "$var_name='$input_val'"
+        printf -v "$var_name" '%s' "$input_val"
     fi
 }
 
@@ -244,32 +245,32 @@ echo -e "  Nhập thông tin cấu hình (Enter = dùng giá trị mặc định
 
 # Install directory
 INSTALL_DIR="${GOCLAW_INSTALL_DIR:-$(pwd)}"
-prompt "📁 Thư mục cài đặt" "$INSTALL_DIR" "INSTALL_DIR"
+prompt "Install directory" "$INSTALL_DIR" "INSTALL_DIR"
 
 # Database
 DB_USER="${GOCLAW_DB_USER:-goclaw}"
 DB_PASSWORD="${GOCLAW_DB_PASSWORD:-$(gen_password 20)}"
-prompt "🗄️  Database username" "$DB_USER" "DB_USER"
-prompt "🔑 Database password" "$DB_PASSWORD" "DB_PASSWORD" true
+prompt "Database username" "$DB_USER" "DB_USER"
+prompt "Database password" "$DB_PASSWORD" "DB_PASSWORD" true
 
 # Encryption key (32 hex chars = 16 bytes)
 ENCRYPTION_KEY="${GOCLAW_ENCRYPTION_KEY:-$(gen_hex 16)}"
-prompt "🔐 Encryption Key (mã hoá API keys)" "$ENCRYPTION_KEY" "ENCRYPTION_KEY" true
+prompt "Encryption Key (for API keys)" "$ENCRYPTION_KEY" "ENCRYPTION_KEY" true
 
 # Port
 PORT="${GOCLAW_PORT:-8080}"
-prompt "🌐 Dashboard port" "$PORT" "PORT"
+prompt "Dashboard port" "$PORT" "PORT"
 
 # Admin password (for first login)
 ADMIN_PASSWORD="$(gen_password 16)"
 
-echo -e "\n${YELLOW}── External APIs (tuỳ chọn, có thể thêm sau trên Dashboard) ──${NC}"
+echo -e "\n${YELLOW}-- External APIs (optional, can add later on Dashboard) --${NC}"
 OPENAI_API_KEY="${GOCLAW_OPENAI_KEY:-}"
 ANTHROPIC_API_KEY="${GOCLAW_ANTHROPIC_KEY:-}"
 TELEGRAM_BOT_TOKEN="${GOCLAW_TELEGRAM_TOKEN:-}"
-prompt "🤖 OpenAI API Key (sk-...)" "$OPENAI_API_KEY" "OPENAI_API_KEY" true
-prompt "🧠 Anthropic API Key (sk-ant-...)" "$ANTHROPIC_API_KEY" "ANTHROPIC_API_KEY" true
-prompt "📱 Telegram Bot Token" "$TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_TOKEN" true
+prompt "OpenAI API Key (sk-...)" "$OPENAI_API_KEY" "OPENAI_API_KEY" true
+prompt "Anthropic API Key (sk-ant-...)" "$ANTHROPIC_API_KEY" "ANTHROPIC_API_KEY" true
+prompt "Telegram Bot Token" "$TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_TOKEN" true
 
 # ==================== PHASE 4: DEPLOY ====================
 header "Phase 4/6 — Deploy GoClaw"
