@@ -40,7 +40,7 @@ for arg in "$@"; do
         --skip-firewall)   SKIP_FIREWALL=true ;;
         --reset)
             echo -e "${YELLOW}⚠ RESET MODE — Xoá cài đặt cũ và setup lại từ đầu${NC}"
-            INSTALL_DIR="${GOCLAW_INSTALL_DIR:-/opt/goclaw}"
+            INSTALL_DIR="${GOCLAW_INSTALL_DIR:-$(pwd)}"
             if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
                 echo -e "  Stopping containers..."
                 cd "$INSTALL_DIR" && docker compose down -v 2>/dev/null
@@ -54,7 +54,7 @@ for arg in "$@"; do
             ;;
         --uninstall)
             echo -e "${RED}${BOLD}⚠ UNINSTALL — Gỡ hoàn toàn GoClaw${NC}"
-            INSTALL_DIR="${GOCLAW_INSTALL_DIR:-/opt/goclaw}"
+            INSTALL_DIR="${GOCLAW_INSTALL_DIR:-$(pwd)}"
             if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
                 cd "$INSTALL_DIR" && docker compose down -v --rmi all 2>/dev/null
             fi
@@ -243,7 +243,7 @@ header "Phase 3/6 — Configuration"
 echo -e "  Nhập thông tin cấu hình (Enter = dùng giá trị mặc định):\n"
 
 # Install directory
-INSTALL_DIR="${GOCLAW_INSTALL_DIR:-/opt/goclaw}"
+INSTALL_DIR="${GOCLAW_INSTALL_DIR:-$(pwd)}"
 prompt "📁 Thư mục cài đặt" "$INSTALL_DIR" "INSTALL_DIR"
 
 # Database
