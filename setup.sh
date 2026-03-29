@@ -142,6 +142,7 @@ DB_PORT=5432
 DB_USER=${DB_USER}
 DB_PASSWORD=${DB_PASSWORD}
 DB_NAME=goclaw
+GOCLAW_POSTGRES_DSN=postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/goclaw?sslmode=disable
 
 # Security
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
