@@ -38,6 +38,37 @@ for arg in "$@"; do
         --non-interactive) NON_INTERACTIVE=true ;;
         --skip-ssl)        SKIP_SSL=true ;;
         --skip-firewall)   SKIP_FIREWALL=true ;;
+        --reset)
+            echo -e "${YELLOW}⚠ RESET MODE — Xoá cài đặt cũ và setup lại từ đầu${NC}"
+            INSTALL_DIR="${GOCLAW_INSTALL_DIR:-/opt/goclaw}"
+            if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+                echo -e "  Stopping containers..."
+                cd "$INSTALL_DIR" && docker compose down -v 2>/dev/null
+                rm -f "$INSTALL_DIR/.env" "$INSTALL_DIR/docker-compose.yml"
+                echo -e "  ${GREEN}✓${NC} Containers stopped, volumes + config removed"
+                echo -e "  ${DIM}ℹ backups/ và workspaces/ được giữ lại${NC}"
+            else
+                echo -e "  Không tìm thấy cài đặt cũ tại $INSTALL_DIR"
+            fi
+            echo -e "  Tiếp tục setup mới...\n"
+            ;;
+        --uninstall)
+            echo -e "${RED}${BOLD}⚠ UNINSTALL — Gỡ hoàn toàn GoClaw${NC}"
+            INSTALL_DIR="${GOCLAW_INSTALL_DIR:-/opt/goclaw}"
+            if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+                cd "$INSTALL_DIR" && docker compose down -v --rmi all 2>/dev/null
+            fi
+            # Remove Nginx config
+            rm -f /etc/nginx/sites-enabled/goclaw /etc/nginx/sites-available/goclaw 2>/dev/null
+            nginx -t &>/dev/null && systemctl reload nginx 2>/dev/null
+            # Remove cron
+            (crontab -l 2>/dev/null | grep -v "goclaw") | crontab - 2>/dev/null
+            # Remove directory
+            echo -e "  Xoá $INSTALL_DIR ..."
+            rm -rf "$INSTALL_DIR"
+            echo -e "  ${GREEN}✓${NC} GoClaw đã được gỡ hoàn toàn."
+            exit 0
+            ;;
         --help|-h)
             echo "Usage: sudo bash setup.sh [OPTIONS]"
             echo ""
@@ -45,6 +76,8 @@ for arg in "$@"; do
             echo "  --non-interactive   Skip all prompts, use defaults + env vars"
             echo "  --skip-ssl          Skip Nginx + SSL certificate setup"
             echo "  --skip-firewall     Skip UFW firewall configuration"
+            echo "  --reset             Xoá containers/config cũ, giữ backups, setup lại"
+            echo "  --uninstall         Gỡ hoàn toàn GoClaw (containers, images, config, data)"
             echo "  -h, --help          Show this help message"
             exit 0
             ;;
