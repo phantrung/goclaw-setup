@@ -253,17 +253,17 @@ cat > "$INSTALL_DIR/.env" << ENVFILE
 # Generated: $(date -Iseconds)
 # =============================================
 
-# Database
-DB_HOST=postgres
-DB_PORT=5432
-DB_USER=${DB_USER}
-DB_PASSWORD=${DB_PASSWORD}
-DB_NAME=goclaw
+# Database — DSN connection string (BẮT BUỘC bởi GoClaw)
 GOCLAW_POSTGRES_DSN=postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/goclaw?sslmode=disable
 
-# Security — ENCRYPTION_KEY mã hoá tất cả API keys trong DB
+# Postgres container credentials (dùng bởi docker-compose)
+POSTGRES_USER=${DB_USER}
+POSTGRES_PASSWORD=${DB_PASSWORD}
+POSTGRES_DB=goclaw
+
+# Security — Mã hoá tất cả API keys trong DB
 # KHÔNG ĐƯỢC thay đổi sau khi đã cấu hình agents, sẽ mất API keys!
-ENCRYPTION_KEY=${ENCRYPTION_KEY}
+GOCLAW_ENCRYPTION_KEY=${ENCRYPTION_KEY}
 
 # Server
 PORT=${PORT}
@@ -286,14 +286,14 @@ services:
     image: postgres:15-alpine
     container_name: goclaw-db
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
