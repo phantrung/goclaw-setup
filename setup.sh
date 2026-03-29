@@ -366,17 +366,9 @@ services:
     networks:
       - goclaw-internal
 
-  dashboard:
-    image: ghcr.io/nextlevelbuilder/goclaw-ui:latest
-    ports:
-      - "127.0.0.1:3000:3000"
-    environment:
-      - GOCLAW_GATEWAY_URL=ws://goclaw:${PORT}
-    depends_on:
-      - goclaw
-    restart: unless-stopped
-    networks:
-      - goclaw-internal
+  # Dashboard: clone full repo to build
+  # git clone https://github.com/nextlevelbuilder/goclaw.git
+  # cd goclaw && docker compose -f docker-compose.selfservice.yml up -d
 
 volumes:
   postgres_data:
@@ -441,12 +433,8 @@ for i in $(seq 1 15); do
     fi
 done
 
-# Check Dashboard
-if docker compose ps --format '{{.Status}}' dashboard 2>/dev/null | grep -qi "up"; then
-    ok "Dashboard running (port 3000)"
-else
-    warn "Dashboard chưa start. Kiểm tra: docker compose logs dashboard"
-fi
+# Dashboard info
+info "Dashboard cần clone repo riêng (xem summary bên dưới)"
 
 # ==================== PHASE 5: SECURITY HARDENING ====================
 header "Phase 5/6 — Security Hardening"
@@ -469,27 +457,12 @@ if ! $SKIP_SSL; then
         info "Đang cài Nginx + Certbot..."
         apt-get install -y -qq nginx certbot python3-certbot-nginx &>/dev/null
 
-        # Tạo Nginx config (dashboard + gateway)
+        # Tạo Nginx config (gateway reverse proxy)
         cat > "/etc/nginx/sites-available/goclaw" << NGINXCONF
-# Dashboard UI
+# GoClaw Gateway
 server {
     listen 80;
     server_name ${DOMAIN};
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-
-# WebSocket Gateway
-server {
-    listen 80;
-    server_name ws.${DOMAIN};
 
     location / {
         proxy_pass http://127.0.0.1:${PORT};
@@ -511,7 +484,7 @@ NGINXCONF
 
         # Request SSL cert
         info "Đang xin SSL certificate cho $DOMAIN..."
-        if certbot --nginx -d "$DOMAIN" -d "ws.$DOMAIN" --non-interactive --agree-tos \
+        if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
             --email "admin@${DOMAIN}" --redirect 2>/dev/null; then
             ok "SSL certificate OK — https://$DOMAIN"
         else
@@ -590,17 +563,21 @@ echo -e "${BOLD}${GREEN}╚═════════════════�
 echo ""
 
 if [ -n "$DOMAIN" ]; then
-    echo -e "  ${BOLD}Dashboard:${NC}  ${GREEN}https://$DOMAIN${NC}"
-    echo -e "  ${BOLD}Gateway:${NC}   ${GREEN}wss://ws.$DOMAIN${NC}"
+    echo -e "  ${BOLD}Gateway:${NC}    ${GREEN}https://$DOMAIN${NC}"
 else
-    echo -e "  ${BOLD}Dashboard:${NC}  ${YELLOW}http://$SERVER_IP:3000${NC}"
-    echo -e "  ${BOLD}Gateway:${NC}   ${YELLOW}ws://$SERVER_IP:$PORT${NC}"
+    echo -e "  ${BOLD}Gateway:${NC}    ${YELLOW}http://$SERVER_IP:$PORT${NC}"
 fi
+echo -e "  ${BOLD}Health:${NC}     ${CYAN}curl http://localhost:${PORT}/health${NC}"
 echo -e "  ${BOLD}Install Dir:${NC} $INSTALL_DIR"
 echo -e ""
-echo -e "  ${BOLD}Login:${NC}"
+echo -e "  ${BOLD}Login (khi có Dashboard):${NC}"
 echo -e "    User ID:       ${CYAN}system${NC}"
 echo -e "    Gateway Token: ${CYAN}(in $INSTALL_DIR/.env → GOCLAW_GATEWAY_TOKEN)${NC}"
+echo -e ""
+echo -e "  ${BOLD}Dashboard Setup:${NC}"
+echo -e "    ${CYAN}git clone https://github.com/nextlevelbuilder/goclaw.git${NC}"
+echo -e "    ${CYAN}cd goclaw && docker compose -f docker-compose.selfservice.yml up -d${NC}"
+echo -e "    ${DIM}Mở http://localhost:3000 sau khi start${NC}"
 echo ""
 
 echo -e "  ${BOLD}Quick Commands:${NC}"
