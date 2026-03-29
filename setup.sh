@@ -1,142 +1,259 @@
 #!/bin/bash
 
 # ==============================================================================
-# GoClaw Automated Setup Wizard
-# Author: Manus AI
-# Description: Professional interactive script to install and configure GoClaw
+# GoClaw Setup Wizard — Professional VPS Deployment
+# Author: Phan Trung (EduQuiz R&D)
+# Version: 1.1.0
+# Description: One-command setup with security hardening for GoClaw AI Agent
+# Usage: sudo bash setup.sh [--non-interactive] [--skip-ssl] [--skip-firewall]
 # ==============================================================================
 
-# --- Colors and Formatting ---
+set -euo pipefail
+
+# ==================== CONFIG ====================
+GOCLAW_VERSION="latest"
+MIN_RAM_MB=512
+MIN_DISK_GB=5
+REQUIRED_CMDS=("curl" "openssl")
+
+# ==================== COLORS ====================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+MAGENTA='\033[0;35m'
+NC='\033[0m'
 BOLD='\033[1m'
+DIM='\033[2m'
 
-# --- Helper Functions ---
-print_step() {
-    echo -e "\n${BLUE}${BOLD}==> $1${NC}"
+# ==================== FLAGS ====================
+NON_INTERACTIVE=false
+SKIP_SSL=false
+SKIP_FIREWALL=false
+ERRORS=0
+
+for arg in "$@"; do
+    case $arg in
+        --non-interactive) NON_INTERACTIVE=true ;;
+        --skip-ssl)        SKIP_SSL=true ;;
+        --skip-firewall)   SKIP_FIREWALL=true ;;
+        --help|-h)
+            echo "Usage: sudo bash setup.sh [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --non-interactive   Skip all prompts, use defaults + env vars"
+            echo "  --skip-ssl          Skip Nginx + SSL certificate setup"
+            echo "  --skip-firewall     Skip UFW firewall configuration"
+            echo "  -h, --help          Show this help message"
+            exit 0
+            ;;
+    esac
+done
+
+# ==================== HELPERS ====================
+header() {
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${BOLD}${CYAN}  $1${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
-print_success() {
-    echo -e "${GREEN}✔ $1${NC}"
-}
+step() { echo -e "\n${BLUE}▶ $1${NC}"; }
+ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
+warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
+fail() { echo -e "  ${RED}✗${NC} $1"; ERRORS=$((ERRORS + 1)); }
+info() { echo -e "  ${DIM}ℹ $1${NC}"; }
 
-print_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}"
-}
-
-print_error() {
-    echo -e "${RED}✖ $1${NC}"
-}
-
-prompt_input() {
+prompt() {
     local prompt_text=$1
     local default_val=$2
     local var_name=$3
-    local is_secret=$4
+    local is_secret=${4:-false}
+
+    if $NON_INTERACTIVE; then
+        eval "$var_name='$default_val'"
+        return
+    fi
 
     if [ -n "$default_val" ]; then
-        echo -e -n "${CYAN}${prompt_text} [${default_val}]: ${NC}"
+        if [ "$is_secret" = true ]; then
+            echo -e -n "  ${CYAN}$prompt_text [****]: ${NC}"
+        else
+            echo -e -n "  ${CYAN}$prompt_text [$default_val]: ${NC}"
+        fi
     else
-        echo -e -n "${CYAN}${prompt_text}: ${NC}"
+        echo -e -n "  ${CYAN}$prompt_text: ${NC}"
     fi
 
     if [ "$is_secret" = true ]; then
-        read -s input_val
-        echo "" # Add newline after secret input
+        read -rs input_val
+        echo ""
     else
-        read input_val
+        read -r input_val
     fi
 
     if [ -z "$input_val" ]; then
-        eval $var_name="'$default_val'"
+        eval "$var_name='$default_val'"
     else
-        eval $var_name="'$input_val'"
+        eval "$var_name='$input_val'"
     fi
 }
 
-generate_random_string() {
-    local length=$1
-    tr -dc A-Za-z0-9 </dev/urandom | head -c $length
+confirm() {
+    if $NON_INTERACTIVE; then return 0; fi
+    local prompt_text=$1
+    echo -e -n "  ${YELLOW}$prompt_text (y/N): ${NC}"
+    read -r answer
+    [[ "$answer" =~ ^[yY]$ ]]
 }
 
-# --- Pre-flight Checks ---
+gen_password() { openssl rand -base64 "${1:-24}" | tr -d '/+=' | head -c "${1:-24}"; }
+gen_hex()      { openssl rand -hex "${1:-16}"; }
+
+# ==================== BANNER ====================
 clear
 echo -e "${BOLD}${GREEN}"
-echo "  ____        ____ _               "
-echo " / ___| ___  / ___| | __ ___      __"
-echo "| |  _ / _ \| |   | |/ _\` \ \ /\ / /"
-echo "| |_| | (_) | |___| | (_| |\ V  V / "
-echo " \____|\___/ \____|_|\__,_| \_/\_/  "
+echo "  ╔══════════════════════════════════════════════╗"
+echo "  ║   GoClaw Setup Wizard  v1.1.0                ║"
+echo "  ║   AI Agent Orchestration Platform             ║"
+echo "  ╚══════════════════════════════════════════════╝"
 echo -e "${NC}"
-echo -e "${BOLD}GoClaw Interactive Setup Wizard${NC}\n"
 
+# ==================== PHASE 1: SYSTEM CHECK ====================
+header "Phase 1/6 — System Requirements"
+
+# Root check
+step "Root privileges"
 if [ "$EUID" -ne 0 ]; then
-    print_error "Please run this script as root (use sudo ./setup.sh)"
+    fail "Script phải chạy bằng root. Dùng: sudo bash setup.sh"
+    exit 1
+fi
+ok "Running as root"
+
+# OS check
+step "Operating System"
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    ok "$NAME $VERSION_ID ($PRETTY_NAME)"
+else
+    warn "Không xác định được OS. Script được test trên Ubuntu 22.04+."
+fi
+
+# RAM check
+step "RAM (tối thiểu ${MIN_RAM_MB}MB)"
+TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
+if [ "$TOTAL_RAM_MB" -ge "$MIN_RAM_MB" ]; then
+    ok "${TOTAL_RAM_MB}MB RAM"
+else
+    fail "Chỉ có ${TOTAL_RAM_MB}MB RAM. Cần tối thiểu ${MIN_RAM_MB}MB."
+fi
+
+# Disk check
+step "Disk (tối thiểu ${MIN_DISK_GB}GB)"
+AVAIL_DISK_GB=$(df -BG / | awk 'NR==2{print $4}' | tr -d 'G')
+if [ "$AVAIL_DISK_GB" -ge "$MIN_DISK_GB" ]; then
+    ok "${AVAIL_DISK_GB}GB available"
+else
+    fail "Chỉ còn ${AVAIL_DISK_GB}GB. Cần tối thiểu ${MIN_DISK_GB}GB."
+fi
+
+# Required commands
+step "Required commands"
+for cmd in "${REQUIRED_CMDS[@]}"; do
+    if command -v "$cmd" &>/dev/null; then
+        ok "$cmd"
+    else
+        warn "$cmd chưa có — sẽ cài tự động"
+    fi
+done
+
+if [ $ERRORS -gt 0 ]; then
+    echo ""
+    fail "Có $ERRORS lỗi. Vui lòng fix trước khi tiếp tục."
     exit 1
 fi
 
-# --- Step 1: Install Dependencies ---
-print_step "Checking and installing dependencies..."
+# ==================== PHASE 2: INSTALL DEPENDENCIES ====================
+header "Phase 2/6 — Install Dependencies"
 
-if ! command -v curl &> /dev/null; then
-    apt-get update -qq && apt-get install -y -qq curl
-fi
+step "apt packages (curl, openssl)"
+apt-get update -qq &>/dev/null
+apt-get install -y -qq curl openssl ca-certificates &>/dev/null
+ok "System packages OK"
 
-if ! command -v docker &> /dev/null; then
-    print_warning "Docker not found. Installing Docker..."
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sh get-docker.sh > /dev/null 2>&1
-    rm get-docker.sh
-    print_success "Docker installed successfully."
+step "Docker Engine"
+if command -v docker &>/dev/null; then
+    DOCKER_VER=$(docker --version | awk '{print $3}' | tr -d ',')
+    ok "Docker $DOCKER_VER (đã cài)"
 else
-    print_success "Docker is already installed."
+    info "Đang cài Docker..."
+    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+    sh /tmp/get-docker.sh &>/dev/null
+    rm -f /tmp/get-docker.sh
+    systemctl enable docker --now &>/dev/null
+    ok "Docker $(docker --version | awk '{print $3}' | tr -d ',')"
 fi
 
-if ! docker compose version &> /dev/null; then
-    print_warning "Docker Compose plugin not found. Installing..."
-    apt-get update -qq && apt-get install -y -qq docker-compose-plugin
-    print_success "Docker Compose installed successfully."
+step "Docker Compose"
+if docker compose version &>/dev/null; then
+    ok "Docker Compose $(docker compose version --short)"
 else
-    print_success "Docker Compose is already installed."
+    info "Đang cài Docker Compose plugin..."
+    apt-get install -y -qq docker-compose-plugin &>/dev/null
+    ok "Docker Compose $(docker compose version --short)"
 fi
 
-# --- Step 2: Configuration Wizard ---
-print_step "GoClaw Configuration"
-echo "Please provide the following information (press Enter to use default values):"
+# ==================== PHASE 3: CONFIGURATION WIZARD ====================
+header "Phase 3/6 — Configuration"
 
-INSTALL_DIR="$(pwd)"
-prompt_input "Installation Directory" "$INSTALL_DIR" "INSTALL_DIR" false
+echo -e "  Nhập thông tin cấu hình (Enter = dùng giá trị mặc định):\n"
 
-DB_USER="goclaw"
-prompt_input "Database Username" "$DB_USER" "DB_USER" false
+# Install directory
+INSTALL_DIR="${GOCLAW_INSTALL_DIR:-/opt/goclaw}"
+prompt "📁 Thư mục cài đặt" "$INSTALL_DIR" "INSTALL_DIR"
 
-DEFAULT_DB_PASS=$(generate_random_string 16)
-prompt_input "Database Password" "$DEFAULT_DB_PASS" "DB_PASSWORD" true
+# Database
+DB_USER="${GOCLAW_DB_USER:-goclaw}"
+DB_PASSWORD="${GOCLAW_DB_PASSWORD:-$(gen_password 20)}"
+prompt "🗄️  Database username" "$DB_USER" "DB_USER"
+prompt "🔑 Database password" "$DB_PASSWORD" "DB_PASSWORD" true
 
-DEFAULT_ENC_KEY=$(openssl rand -hex 16)
-prompt_input "Encryption Key (32 chars, used for securing API keys)" "$DEFAULT_ENC_KEY" "ENCRYPTION_KEY" true
+# Encryption key (32 hex chars = 16 bytes)
+ENCRYPTION_KEY="${GOCLAW_ENCRYPTION_KEY:-$(gen_hex 16)}"
+prompt "🔐 Encryption Key (mã hoá API keys)" "$ENCRYPTION_KEY" "ENCRYPTION_KEY" true
 
-PORT="8080"
-prompt_input "Web Dashboard Port" "$PORT" "PORT" false
+# Port
+PORT="${GOCLAW_PORT:-8080}"
+prompt "🌐 Dashboard port" "$PORT" "PORT"
 
-echo -e "\n${YELLOW}--- External APIs (Optional but recommended) ---${NC}"
-prompt_input "OpenAI API Key (sk-...)" "" "OPENAI_API_KEY" true
-prompt_input "Anthropic API Key (sk-ant-...)" "" "ANTHROPIC_API_KEY" true
-prompt_input "Telegram Bot Token (123456:ABC...)" "" "TELEGRAM_BOT_TOKEN" true
+# Admin password (for first login)
+ADMIN_PASSWORD="$(gen_password 16)"
 
-# --- Step 3: Setup Environment ---
-print_step "Setting up installation directory..."
+echo -e "\n${YELLOW}── External APIs (tuỳ chọn, có thể thêm sau trên Dashboard) ──${NC}"
+OPENAI_API_KEY="${GOCLAW_OPENAI_KEY:-}"
+ANTHROPIC_API_KEY="${GOCLAW_ANTHROPIC_KEY:-}"
+TELEGRAM_BOT_TOKEN="${GOCLAW_TELEGRAM_TOKEN:-}"
+prompt "🤖 OpenAI API Key (sk-...)" "$OPENAI_API_KEY" "OPENAI_API_KEY" true
+prompt "🧠 Anthropic API Key (sk-ant-...)" "$ANTHROPIC_API_KEY" "ANTHROPIC_API_KEY" true
+prompt "📱 Telegram Bot Token" "$TELEGRAM_BOT_TOKEN" "TELEGRAM_BOT_TOKEN" true
+
+# ==================== PHASE 4: DEPLOY ====================
+header "Phase 4/6 — Deploy GoClaw"
+
+step "Tạo thư mục"
 mkdir -p "$INSTALL_DIR/workspaces"
-cd "$INSTALL_DIR"
-print_success "Created directory: $INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/backups"
+ok "$INSTALL_DIR"
 
-print_step "Generating .env file..."
-cat << EOF > .env
-# Database Configuration
+step "Tạo .env (permissions 600)"
+cat > "$INSTALL_DIR/.env" << ENVFILE
+# =============================================
+# GoClaw Configuration — Auto-generated
+# Generated: $(date -Iseconds)
+# =============================================
+
+# Database
 DB_HOST=postgres
 DB_PORT=5432
 DB_USER=${DB_USER}
@@ -144,28 +261,30 @@ DB_PASSWORD=${DB_PASSWORD}
 DB_NAME=goclaw
 GOCLAW_POSTGRES_DSN=postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/goclaw?sslmode=disable
 
-# Security
+# Security — ENCRYPTION_KEY mã hoá tất cả API keys trong DB
+# KHÔNG ĐƯỢC thay đổi sau khi đã cấu hình agents, sẽ mất API keys!
 ENCRYPTION_KEY=${ENCRYPTION_KEY}
 
 # Server
 PORT=${PORT}
 GIN_MODE=release
 
-# API Keys
+# API Keys (có thể thêm/sửa trên Dashboard sau)
 OPENAI_API_KEY=${OPENAI_API_KEY}
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+
+# Telegram
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-EOF
-chmod 600 .env
-print_success ".env file created and secured."
+ENVFILE
+chmod 600 "$INSTALL_DIR/.env"
+ok ".env (root-only readable)"
 
-print_step "Generating docker-compose.yml..."
-cat << 'EOF' > docker-compose.yml
-version: '3.8'
-
+step "Tạo docker-compose.yml"
+cat > "$INSTALL_DIR/docker-compose.yml" << 'COMPOSEFILE'
 services:
   postgres:
     image: postgres:15-alpine
+    container_name: goclaw-db
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -175,14 +294,18 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - goclaw-internal
+    # SECURITY: Không expose port ra ngoài
 
   goclaw:
     image: ghcr.io/nextlevelbuilder/goclaw:latest
+    container_name: goclaw-app
     ports:
-      - "${PORT}:${PORT}"
+      - "127.0.0.1:${PORT}:${PORT}"
     env_file:
       - .env
     depends_on:
@@ -191,39 +314,217 @@ services:
     restart: unless-stopped
     volumes:
       - ./workspaces:/app/workspaces
+    networks:
+      - goclaw-internal
 
 volumes:
   postgres_data:
-EOF
-print_success "docker-compose.yml created."
+    driver: local
 
-# --- Step 4: Start Services ---
-print_step "Starting GoClaw services..."
-docker compose pull
-docker compose up -d
+networks:
+  goclaw-internal:
+    driver: bridge
+COMPOSEFILE
+ok "docker-compose.yml"
 
-if [ $? -eq 0 ]; then
-    print_success "Services started successfully!"
+step "Tạo backup script"
+cat > "$INSTALL_DIR/backup.sh" << 'BACKUPSCRIPT'
+#!/bin/bash
+# GoClaw Database Backup
+BACKUP_DIR="$(dirname "$0")/backups"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="$BACKUP_DIR/goclaw_${TIMESTAMP}.sql.gz"
+
+cd "$(dirname "$0")"
+docker compose exec -T postgres pg_dump -U goclaw goclaw | gzip > "$BACKUP_FILE"
+
+# Giữ lại 7 bản backup gần nhất
+ls -t "$BACKUP_DIR"/goclaw_*.sql.gz 2>/dev/null | tail -n +8 | xargs -r rm
+echo "✓ Backup: $BACKUP_FILE ($(du -h "$BACKUP_FILE" | cut -f1))"
+BACKUPSCRIPT
+chmod +x "$INSTALL_DIR/backup.sh"
+ok "backup.sh (giữ 7 bản gần nhất)"
+
+step "Pull Docker images"
+cd "$INSTALL_DIR"
+docker compose pull 2>&1 | tail -1
+ok "Images pulled"
+
+step "Khởi động services"
+docker compose up -d 2>&1 | tail -2
+
+# Wait for health
+echo -e "  ${DIM}Đợi PostgreSQL khởi động...${NC}"
+for i in $(seq 1 30); do
+    if docker compose exec -T postgres pg_isready -U "$DB_USER" -d goclaw &>/dev/null 2>&1; then
+        ok "PostgreSQL healthy"
+        break
+    fi
+    sleep 1
+    if [ "$i" -eq 30 ]; then
+        fail "PostgreSQL không khởi động được trong 30s"
+    fi
+done
+
+# Check GoClaw app
+sleep 3
+if docker compose ps --format '{{.Status}}' goclaw 2>/dev/null | grep -qi "up"; then
+    ok "GoClaw app running"
 else
-    print_error "Failed to start services. Please check docker logs."
-    exit 1
+    warn "GoClaw container chưa ổn định. Kiểm tra: docker compose logs goclaw"
 fi
 
-# --- Step 5: Final Output ---
-SERVER_IP=$(curl -s ifconfig.me || echo "YOUR_SERVER_IP")
+# ==================== PHASE 5: SECURITY HARDENING ====================
+header "Phase 5/6 — Security Hardening"
 
-echo -e "\n${BOLD}${GREEN}======================================================================${NC}"
-echo -e "${BOLD}${GREEN}🎉 GoClaw Installation Completed Successfully! 🎉${NC}"
-echo -e "${BOLD}${GREEN}======================================================================${NC}\n"
+# 5A: Nginx Reverse Proxy + SSL
+if ! $SKIP_SSL; then
+    step "Nginx Reverse Proxy + SSL"
 
-echo -e "${BOLD}📍 Web Dashboard:${NC} http://${SERVER_IP}:${PORT}"
-echo -e "${BOLD}📁 Install Dir:${NC}   ${INSTALL_DIR}"
-echo -e "\n${YELLOW}Useful Commands:${NC}"
-echo -e "  - View logs:    ${CYAN}cd ${INSTALL_DIR} && docker compose logs -f goclaw${NC}"
-echo -e "  - Stop server:  ${CYAN}cd ${INSTALL_DIR} && docker compose down${NC}"
-echo -e "  - Start server: ${CYAN}cd ${INSTALL_DIR} && docker compose up -d${NC}"
-echo -e "\n${BOLD}Next Steps:${NC}"
-echo "1. Open the Web Dashboard in your browser."
-echo "2. Create your first Admin account."
-echo "3. Go to Agents -> Create New to setup your COO bot."
-echo -e "\nEnjoy your automated company! 🚀"
+    SETUP_SSL=false
+    DOMAIN=""
+
+    if ! $NON_INTERACTIVE; then
+        if confirm "Cài Nginx + SSL (HTTPS) cho Dashboard?"; then
+            SETUP_SSL=true
+            prompt "🌐 Tên miền (VD: goclaw.example.com)" "" "DOMAIN"
+        fi
+    fi
+
+    if $SETUP_SSL && [ -n "$DOMAIN" ]; then
+        info "Đang cài Nginx + Certbot..."
+        apt-get install -y -qq nginx certbot python3-certbot-nginx &>/dev/null
+
+        # Tạo Nginx config
+        cat > "/etc/nginx/sites-available/goclaw" << NGINXCONF
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    location / {
+        proxy_pass http://127.0.0.1:${PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 300s;
+    }
+}
+NGINXCONF
+
+        ln -sf /etc/nginx/sites-available/goclaw /etc/nginx/sites-enabled/
+        rm -f /etc/nginx/sites-enabled/default
+        nginx -t &>/dev/null && systemctl reload nginx
+
+        # Request SSL cert
+        info "Đang xin SSL certificate cho $DOMAIN..."
+        if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
+            --email "admin@${DOMAIN}" --redirect 2>/dev/null; then
+            ok "SSL certificate OK — https://$DOMAIN"
+        else
+            warn "SSL thất bại. Kiểm tra DNS trỏ về IP server chưa."
+            info "Retry sau: sudo certbot --nginx -d $DOMAIN"
+        fi
+    else
+        info "Bỏ qua SSL. Dashboard chạy HTTP trên port $PORT."
+        warn "⚠ KHÔNG dùng HTTP trên production — API keys sẽ bị lộ!"
+    fi
+else
+    info "Bỏ qua SSL (--skip-ssl)"
+fi
+
+# 5B: Firewall (UFW)
+if ! $SKIP_FIREWALL; then
+    step "Firewall (UFW)"
+
+    SETUP_FW=false
+    if ! $NON_INTERACTIVE; then
+        if confirm "Cấu hình UFW firewall?"; then
+            SETUP_FW=true
+        fi
+    fi
+
+    if $SETUP_FW; then
+        apt-get install -y -qq ufw &>/dev/null
+
+        ufw --force reset &>/dev/null
+        ufw default deny incoming &>/dev/null
+        ufw default allow outgoing &>/dev/null
+        ufw allow ssh &>/dev/null
+        ufw allow 80/tcp &>/dev/null
+        ufw allow 443/tcp &>/dev/null
+
+        # Chỉ mở port GoClaw nếu KHÔNG có Nginx
+        if [ -z "$DOMAIN" ]; then
+            ufw allow "$PORT"/tcp &>/dev/null
+            info "Mở port $PORT (không có Nginx)"
+        fi
+
+        ufw --force enable &>/dev/null
+        ok "UFW enabled: SSH, HTTP, HTTPS"
+        info "Port $PORT chỉ listen 127.0.0.1 (không expose ra internet)"
+    else
+        info "Bỏ qua firewall."
+    fi
+else
+    info "Bỏ qua firewall (--skip-firewall)"
+fi
+
+# 5C: Cron backup
+step "Automated backup (daily)"
+CRON_JOB="0 3 * * * ${INSTALL_DIR}/backup.sh >> ${INSTALL_DIR}/backups/cron.log 2>&1"
+(crontab -l 2>/dev/null | grep -v "goclaw"; echo "$CRON_JOB") | crontab -
+ok "Backup tự động lúc 3:00 AM hàng ngày"
+
+# ==================== PHASE 6: HEALTH CHECK & SUMMARY ====================
+header "Phase 6/6 — Health Check & Summary"
+
+step "Service status"
+CONTAINERS=$(docker compose -f "$INSTALL_DIR/docker-compose.yml" ps --format '{{.Name}} → {{.Status}}' 2>/dev/null)
+echo "$CONTAINERS" | while read -r line; do
+    ok "$line"
+done
+
+step "Network"
+SERVER_IP=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "N/A")
+ok "Public IP: $SERVER_IP"
+
+# Final summary
+echo ""
+echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BOLD}${GREEN}║            🎉  GoClaw Deployed Successfully!  🎉            ║${NC}"
+echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+
+if [ -n "$DOMAIN" ]; then
+    echo -e "  ${BOLD}🌐 Dashboard:${NC}  ${GREEN}https://$DOMAIN${NC}"
+else
+    echo -e "  ${BOLD}🌐 Dashboard:${NC}  ${YELLOW}http://$SERVER_IP:$PORT${NC}"
+fi
+echo -e "  ${BOLD}📁 Install Dir:${NC} $INSTALL_DIR"
+echo -e "  ${BOLD}🔑 DB Password:${NC} ${DIM}(saved in $INSTALL_DIR/.env)${NC}"
+echo ""
+
+echo -e "  ${BOLD}Quick Commands:${NC}"
+echo -e "    ${CYAN}cd $INSTALL_DIR${NC}"
+echo -e "    ${CYAN}docker compose logs -f goclaw${NC}    ${DIM}# Xem logs${NC}"
+echo -e "    ${CYAN}docker compose restart${NC}            ${DIM}# Restart${NC}"
+echo -e "    ${CYAN}./backup.sh${NC}                       ${DIM}# Backup DB${NC}"
+echo ""
+
+echo -e "  ${BOLD}Next Steps:${NC}"
+echo "    1. Mở Dashboard → Tạo tài khoản Admin"
+echo "    2. Tạo Agent COO (chọn model gpt-4o)"
+echo "    3. Kết nối Telegram Bot → Chat với COO"
+echo ""
+
+echo -e "  ${BOLD}${RED}⚠ Security Reminders:${NC}"
+echo "    • KHÔNG commit .env lên Git (chứa API keys + DB password)"
+echo "    • KHÔNG đổi ENCRYPTION_KEY sau khi đã tạo agents"
+echo "    • Backup tự động chạy 3:00 AM → $INSTALL_DIR/backups/"
+echo ""
+echo -e "  ${DIM}Setup completed at $(date +'%Y-%m-%d %H:%M:%S %Z')${NC}"
+echo ""
