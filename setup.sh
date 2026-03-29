@@ -3,7 +3,7 @@
 # ==============================================================================
 # GoClaw Setup Wizard — Professional VPS Deployment
 # Author: Phan Trung (EduQuiz R&D)
-# Version: 1.1.0
+# Version: 1.2.0
 # Description: One-command setup with security hardening for GoClaw AI Agent
 # Usage: sudo bash setup.sh [--non-interactive] [--skip-ssl] [--skip-firewall]
 # ==============================================================================
@@ -257,12 +257,12 @@ prompt "Database password" "$DB_PASSWORD" "DB_PASSWORD" true
 ENCRYPTION_KEY="${GOCLAW_ENCRYPTION_KEY:-$(gen_hex 16)}"
 prompt "Encryption Key (for API keys)" "$ENCRYPTION_KEY" "ENCRYPTION_KEY" true
 
-# Port
-PORT="${GOCLAW_PORT:-8080}"
-prompt "Dashboard port" "$PORT" "PORT"
+# Port (GoClaw gateway default: 18790)
+PORT="${GOCLAW_PORT:-18790}"
+prompt "Gateway port" "$PORT" "PORT"
 
-# Admin password (for first login)
-ADMIN_PASSWORD="$(gen_password 16)"
+# Gateway Token (for Dashboard login)
+GATEWAY_TOKEN="${GOCLAW_GATEWAY_TOKEN:-$(gen_hex 32)}"
 
 echo -e "\n${YELLOW}-- External APIs (optional, can add later on Dashboard) --${NC}"
 OPENAI_API_KEY="${GOCLAW_OPENAI_KEY:-}"
@@ -299,13 +299,21 @@ POSTGRES_DB=goclaw
 # KHÔNG ĐƯỢC thay đổi sau khi đã cấu hình agents, sẽ mất API keys!
 GOCLAW_ENCRYPTION_KEY=${ENCRYPTION_KEY}
 
+# Gateway Token — dùng để login Dashboard
+# Login: User ID = system, Password = token này
+GOCLAW_GATEWAY_TOKEN=${GATEWAY_TOKEN}
+
+# Auto migration khi khởi động
+GOCLAW_AUTO_UPGRADE=true
+
 # Server
+GOCLAW_PORT=${PORT}
 PORT=${PORT}
 GIN_MODE=release
 
 # API Keys (có thể thêm/sửa trên Dashboard sau)
-OPENAI_API_KEY=${OPENAI_API_KEY}
-ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+GOCLAW_OPENROUTER_API_KEY=${OPENAI_API_KEY}
+GOCLAW_ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
 
 # Telegram
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
@@ -325,7 +333,7 @@ step "Tạo docker-compose.yml"
 cat > "$INSTALL_DIR/docker-compose.yml" << 'COMPOSEFILE'
 services:
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg18
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -337,7 +345,8 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 30s
     networks:
       - goclaw-internal
     # SECURITY: Không expose port ra ngoài
@@ -354,6 +363,18 @@ services:
     restart: unless-stopped
     volumes:
       - ./workspaces:/app/workspaces
+    networks:
+      - goclaw-internal
+
+  dashboard:
+    image: ghcr.io/nextlevelbuilder/goclaw-ui:latest
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - GOCLAW_GATEWAY_URL=ws://goclaw:${PORT}
+    depends_on:
+      - goclaw
+    restart: unless-stopped
     networks:
       - goclaw-internal
 
@@ -394,24 +415,37 @@ step "Khởi động services"
 docker compose up -d 2>&1 | tail -2
 
 # Wait for health
-echo -e "  ${DIM}Đợi PostgreSQL khởi động...${NC}"
-for i in $(seq 1 30); do
+echo -e "  ${DIM}Đợi PostgreSQL khởi động (pgvector/pg18)...${NC}"
+for i in $(seq 1 60); do
     if docker compose exec -T postgres pg_isready -U "$DB_USER" -d goclaw &>/dev/null 2>&1; then
-        ok "PostgreSQL healthy"
+        ok "PostgreSQL healthy (pgvector enabled)"
         break
     fi
-    sleep 1
-    if [ "$i" -eq 30 ]; then
-        fail "PostgreSQL không khởi động được trong 30s"
+    sleep 2
+    if [ "$i" -eq 60 ]; then
+        fail "PostgreSQL không khởi động được trong 120s"
+        info "Debug: docker compose logs postgres"
     fi
 done
 
-# Check GoClaw app
-sleep 3
-if docker compose ps --format '{{.Status}}' goclaw 2>/dev/null | grep -qi "up"; then
-    ok "GoClaw app running"
+# Check GoClaw gateway
+echo -e "  ${DIM}Đợi GoClaw gateway...${NC}"
+for i in $(seq 1 15); do
+    if curl -sf http://127.0.0.1:${PORT}/health &>/dev/null; then
+        ok "GoClaw gateway healthy"
+        break
+    fi
+    sleep 2
+    if [ "$i" -eq 15 ]; then
+        warn "GoClaw chưa ready. Kiểm tra: docker compose logs goclaw"
+    fi
+done
+
+# Check Dashboard
+if docker compose ps --format '{{.Status}}' dashboard 2>/dev/null | grep -qi "up"; then
+    ok "Dashboard running (port 3000)"
 else
-    warn "GoClaw container chưa ổn định. Kiểm tra: docker compose logs goclaw"
+    warn "Dashboard chưa start. Kiểm tra: docker compose logs dashboard"
 fi
 
 # ==================== PHASE 5: SECURITY HARDENING ====================
@@ -427,7 +461,7 @@ if ! $SKIP_SSL; then
     if ! $NON_INTERACTIVE; then
         if confirm "Cài Nginx + SSL (HTTPS) cho Dashboard?"; then
             SETUP_SSL=true
-            prompt "🌐 Tên miền (VD: goclaw.example.com)" "" "DOMAIN"
+            prompt "Domain (e.g. goclaw.example.com)" "" "DOMAIN"
         fi
     fi
 
@@ -435,11 +469,27 @@ if ! $SKIP_SSL; then
         info "Đang cài Nginx + Certbot..."
         apt-get install -y -qq nginx certbot python3-certbot-nginx &>/dev/null
 
-        # Tạo Nginx config
+        # Tạo Nginx config (dashboard + gateway)
         cat > "/etc/nginx/sites-available/goclaw" << NGINXCONF
+# Dashboard UI
 server {
     listen 80;
     server_name ${DOMAIN};
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+
+# WebSocket Gateway
+server {
+    listen 80;
+    server_name ws.${DOMAIN};
 
     location / {
         proxy_pass http://127.0.0.1:${PORT};
@@ -461,7 +511,7 @@ NGINXCONF
 
         # Request SSL cert
         info "Đang xin SSL certificate cho $DOMAIN..."
-        if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos \
+        if certbot --nginx -d "$DOMAIN" -d "ws.$DOMAIN" --non-interactive --agree-tos \
             --email "admin@${DOMAIN}" --redirect 2>/dev/null; then
             ok "SSL certificate OK — https://$DOMAIN"
         else
@@ -540,12 +590,17 @@ echo -e "${BOLD}${GREEN}╚═════════════════�
 echo ""
 
 if [ -n "$DOMAIN" ]; then
-    echo -e "  ${BOLD}🌐 Dashboard:${NC}  ${GREEN}https://$DOMAIN${NC}"
+    echo -e "  ${BOLD}Dashboard:${NC}  ${GREEN}https://$DOMAIN${NC}"
+    echo -e "  ${BOLD}Gateway:${NC}   ${GREEN}wss://ws.$DOMAIN${NC}"
 else
-    echo -e "  ${BOLD}🌐 Dashboard:${NC}  ${YELLOW}http://$SERVER_IP:$PORT${NC}"
+    echo -e "  ${BOLD}Dashboard:${NC}  ${YELLOW}http://$SERVER_IP:3000${NC}"
+    echo -e "  ${BOLD}Gateway:${NC}   ${YELLOW}ws://$SERVER_IP:$PORT${NC}"
 fi
-echo -e "  ${BOLD}📁 Install Dir:${NC} $INSTALL_DIR"
-echo -e "  ${BOLD}🔑 DB Password:${NC} ${DIM}(saved in $INSTALL_DIR/.env)${NC}"
+echo -e "  ${BOLD}Install Dir:${NC} $INSTALL_DIR"
+echo -e ""
+echo -e "  ${BOLD}Login:${NC}"
+echo -e "    User ID:       ${CYAN}system${NC}"
+echo -e "    Gateway Token: ${CYAN}(in $INSTALL_DIR/.env → GOCLAW_GATEWAY_TOKEN)${NC}"
 echo ""
 
 echo -e "  ${BOLD}Quick Commands:${NC}"
@@ -562,9 +617,9 @@ echo -e "    ${CYAN}cd ${INSTALL_DIR} && docker compose ps${NC}               ${
 echo ""
 
 echo -e "  ${BOLD}Next Steps:${NC}"
-echo "    1. Mở Dashboard → Tạo tài khoản Admin"
-echo "    2. Tạo Agent COO (chọn model gpt-4o)"
-echo "    3. Kết nối Telegram Bot → Chat với COO"
+echo "    1. Mở Dashboard → Login (User: system, Token: trong .env)"
+echo "    2. Thêm LLM Provider (OpenAI/Anthropic/OpenRouter)"
+echo "    3. Tạo Agent đầu tiên → Kết nối Telegram Bot"
 echo ""
 
 echo -e "  ${BOLD}${RED}⚠ Security Reminders:${NC}"
