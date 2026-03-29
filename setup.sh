@@ -14,7 +14,7 @@ set -euo pipefail
 
 # ==================== CONFIG ====================
 GOCLAW_REPO="https://github.com/nextlevelbuilder/goclaw.git"
-DEFAULT_INSTALL_DIR="/opt/goclaw"
+DEFAULT_INSTALL_DIR="$(pwd)"
 MIN_RAM_MB=2048
 MIN_DISK_GB=10
 REQUIRED_CMDS=("curl" "openssl" "git")
